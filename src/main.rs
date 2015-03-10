@@ -2,12 +2,14 @@
 
 extern crate cookie;
 extern crate hyper;
+extern crate rand;
 // Freakin really? Why are dashes allowed here?
 extern crate "rustc-serialize" as serialize;
 
 use cookie::CookieJar;
 use hyper::{Client, header};
 use hyper::header::Headers;
+use rand::{Rng, thread_rng};
 use serialize::json;
 use std::error::FromError;
 use std::fs::File;
@@ -42,22 +44,38 @@ impl FromError<io::Error> for Pc3Error {
     }
 }
 
-static BOUNDARY: &'static str = "-----------------------------------pc3client-sep";
-
 fn create_submit_body(boundary: &str, src: &mut File) -> Result<Vec<u8>, Pc3Error> {
     let mut file_content = Vec::new();
     try!(src.read_to_end(&mut file_content));
 
+    // There has to be a better way
     Ok("--".bytes()
        .chain(boundary.bytes())
        .chain("\nContent-Disposition: form-data; name=\"teamCode\"; filename=\"".bytes())
-       .chain(src.path().unwrap().file_name().unwrap().to_str().unwrap().bytes())
+       .chain(file_name(src).bytes())
        .chain("\"\nContent-Type: application/octet-stream\n\n".bytes())
        .chain(file_content.into_iter())
        .chain("\n--".bytes())
        .chain(boundary.bytes())
        .chain("--".bytes())
        .collect())
+}
+fn file_name(f: &File) -> &str {
+    f.path().unwrap().extension().unwrap().to_str().unwrap()
+}
+fn file_extension(f: &File) -> &str {
+    f.path().unwrap().file_name().unwrap().to_str().unwrap()
+}
+fn make_url(url: &str, components: Vec<&str>) -> String {
+    let mut res = String::new();
+    res.push_str(url);
+
+    for component in components.iter() {
+        res.push('/');
+        res.push_str(component);
+    }
+
+    res
 }
 
 impl Pc3Client {
@@ -74,14 +92,16 @@ impl Pc3Client {
 
         let mut client = Client::new();
         let res = try!(client
-                       .post(&self.url.chars().chain("/authenticate".chars()).collect::<String>()[..])
+                       .post(&make_url(&self.url, vec!["authenticate"])[..])
                        .headers(headers)
                        .body(&format!("username={}&password={}", user, pass)[..])
                        .send());
+
         if let Some(&header::SetCookie(ref cookies)) = res.headers.get() {
             for cookie in cookies {
                 self.jar.add(cookie.clone());
             }
+
             Ok(())
         } else {
             Err(Pc3Error::Other("Did not receive authentication cookie"))
@@ -89,16 +109,19 @@ impl Pc3Client {
     }
     fn compete(&self, problem_name: &str, mut src: &mut File) -> Result<Result<i32, ()>, Pc3Error> {
         if let Some(session) = self.jar.find("session") {
+            let boundary = thread_rng().gen_ascii_chars().take(48).collect::<String>();
+
             let mut headers = Headers::new();
-            headers.set_raw("Content-Type", vec![b"multipart/form-data; boundary=".to_vec(), BOUNDARY.bytes().collect()]);
+            headers.set_raw("Content-Type", vec![b"multipart/form-data; boundary=".to_vec(), boundary.as_bytes().to_vec()]);
             headers.set_raw("Cookie", vec![b"session=".to_vec(), session.value.bytes().collect()]);
 
             let mut client = Client::new();
             let mut res = try!(client
-                               .post(&self.url.chars().chain("/compete/".chars()).chain(problem_name.chars()).chain("/".chars()).chain(src.path().unwrap().extension().unwrap().to_str().unwrap().chars()).collect::<String>()[..])
+                               .post(&make_url(&self.url, vec!["compete", problem_name, file_extension(src)])[..])
                                .headers(headers)
-                               .body(&unsafe {String::from_utf8_unchecked(try!(create_submit_body(BOUNDARY, src)))}[..])
+                               .body(&unsafe {String::from_utf8_unchecked(try!(create_submit_body(&boundary, src)))}[..])
                                .send());
+
             let mut result = String::new();
             try!(res.read_to_string(&mut result));
             let (success, score) = try!(json::decode::<(bool, i32)>(&result));
@@ -116,8 +139,9 @@ impl Pc3Client {
     fn scores(&self) -> Result<Vec<(String, i32)>, Pc3Error> {
         let mut client = Client::new();
         let mut res = try!(client
-                       .get(&self.url.chars().chain("/scores".chars()).collect::<String>()[..])
-                       .send());
+                           .get(&make_url(&self.url, vec!["scores"])[..])
+                           .send());
+
         let mut result = String::new();
         try!(res.read_to_string(&mut result));
         Ok(try!(json::decode::<Vec<(String, i32)>>(&result)))
@@ -125,8 +149,9 @@ impl Pc3Client {
     fn inform(&self, problem_name: &str) -> Result<String, Pc3Error> {
         let mut client = Client::new();
         let mut res = try!(client
-                           .get(&self.url.chars().chain("/inform/".chars()).chain(problem_name.chars()).collect::<String>()[..])
+                           .get(&make_url(&self.url, vec!["inform", problem_name])[..])
                            .send());
+
         let mut result = String::new();
         try!(res.read_to_string(&mut result));
         Ok(try!(json::decode::<String>(&result)))
@@ -134,7 +159,7 @@ impl Pc3Client {
 }
 
 fn main() {
-    let mut client = Pc3Client::new("http://10.0.11.3:5000");
+    let mut client = Pc3Client::new("http://127.0.0.1:5000");
     client.authenticate("team1", "password").unwrap();
     println!("{}", client.inform("problem1").unwrap());
     println!("{:?}", client.compete("problem1", &mut File::open("./resources/program.java").unwrap()).unwrap());

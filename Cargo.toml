@@ -8,5 +8,7 @@ authors = ["Lyn Levenick <lyn.levenick@gmail.com>"]
 cookie = "*"
 [dependencies.hyper]
 hyper = "*"
+[dependencies.rand]
+rand = "*"
 [dependencies.rustc-serialize]
 rustc-serialize = "*"
