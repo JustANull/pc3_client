@@ -1,4 +1,4 @@
-#![feature(io)]
+#![feature(file_path, io, path)]
 
 extern crate cookie;
 extern crate hyper;
